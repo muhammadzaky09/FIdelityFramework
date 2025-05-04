@@ -139,7 +139,7 @@ def int82bin(val):
     return bin(us_val)[2:].zfill(8)
 
 # Keep bit flip perturbation logic, with slight tensor adjustments
-def get_bit_flip_perturbation(network, precision, golden_d, layer, typ=None, quant_min_max=None):
+def get_bit_flip_perturbation(network, precision, golden_d, layer, typ=None, quant_min_max=None, bit_position=None):
     # Convert tensor value to Python scalar if needed
     if isinstance(golden_d, torch.Tensor):
         golden_d = golden_d.item()
@@ -147,7 +147,7 @@ def get_bit_flip_perturbation(network, precision, golden_d, layer, typ=None, qua
     if 'fp32' in precision:
         golden_b = fp322bin(golden_d)
         assert len(golden_b) == 32
-        flip_bit = np.random.randint(32)
+        flip_bit = bit_position
         if golden_b[31-flip_bit] == '1':
             inj_b = golden_b[:31-flip_bit] + '0' + golden_b[31-flip_bit+1:]
         else:
@@ -157,7 +157,7 @@ def get_bit_flip_perturbation(network, precision, golden_d, layer, typ=None, qua
     elif 'fp16' in precision:
         golden_b = fp162bin(golden_d)
         assert len(golden_b) == 16
-        flip_bit = np.random.randint(16)
+        flip_bit = bit_position
         if golden_b[15-flip_bit] == '1':
             inj_b = golden_b[:15-flip_bit] + '0' + golden_b[15-flip_bit+1:]
         else:
@@ -169,7 +169,7 @@ def get_bit_flip_perturbation(network, precision, golden_d, layer, typ=None, qua
         granu = (q_max - q_min)/65535
         golden_b = int162bin(max(-32768,min(32767,int(round((golden_d - q_min)/granu)) - 32768)))
         assert len(golden_b) == 16
-        flip_bit = np.random.randint(16)
+        flip_bit = bit_position
         if golden_b[15-flip_bit] == '1':
             inj_b = golden_b[:15-flip_bit] + '0' + golden_b[15-flip_bit+1:]
         else:
@@ -181,7 +181,7 @@ def get_bit_flip_perturbation(network, precision, golden_d, layer, typ=None, qua
         granu = (q_max - q_min)/256
         golden_b = int82bin(max(-128,min(127,int(round((golden_d - q_min)/granu)) - 128)))
         assert len(golden_b) == 8
-        flip_bit = np.random.randint(8)
+        flip_bit = bit_position
         if golden_b[7-flip_bit] == '1':
             inj_b = golden_b[:7-flip_bit] + '0' + golden_b[7-flip_bit+1:]
         else:

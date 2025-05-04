@@ -8,7 +8,7 @@ from inj_util import bin2int16, int162bin, bin2int8, int82bin
 from inj_util import get_bit_flip_perturbation
 
 # Function to register hooks for fault injection
-def register_fault_hooks(model, inj_type, inj_layer, inj_pos=None, quant_min_max=None, precision='fp32'):
+def register_fault_hooks(model, inj_type, inj_layer, inj_pos=None, quant_min_max=None, precision='fp32', bit_position=None):
     """
     Register appropriate hooks to model layers based on injection type
     
@@ -19,6 +19,7 @@ def register_fault_hooks(model, inj_type, inj_layer, inj_pos=None, quant_min_max
         inj_pos: Dictionary mapping layer names to injection positions
         quant_min_max: Min/max values for quantized types
         precision: Numerical precision (fp32, fp16, int16, int8)
+        bit_position: Specific bit position to inject (if applicable)
     
     Returns:
         handles: List of hook handles (for later removal)
@@ -35,7 +36,7 @@ def register_fault_hooks(model, inj_type, inj_layer, inj_pos=None, quant_min_max
                 # Register pre-forward hook for input injection
                 handle = module.register_forward_pre_hook(
                     lambda mod, inp, name=name, precision=precision, quant_min_max=quant_min_max, inj_type=inj_type, inj_pos=inj_pos: 
-                    input_injection_hook(mod, inp, name, precision, quant_min_max, inj_type, inj_pos)
+                    input_injection_hook(mod, inp, name, precision, quant_min_max, inj_type, inj_pos, bit_position)
                 )
                 handles.append(handle)
             
@@ -43,7 +44,7 @@ def register_fault_hooks(model, inj_type, inj_layer, inj_pos=None, quant_min_max
                 # Register pre-forward hook for weight injection
                 handle = module.register_forward_pre_hook(
                     lambda mod, inp, name=name, precision=precision, quant_min_max=quant_min_max, inj_type=inj_type, inj_pos=inj_pos: 
-                    weight_injection_hook(mod, inp, name, precision, quant_min_max, inj_type, inj_pos)
+                    weight_injection_hook(mod, inp, name, precision, quant_min_max, inj_type, inj_pos, bit_position)
                 )
                 handles.append(handle)
             
@@ -51,13 +52,13 @@ def register_fault_hooks(model, inj_type, inj_layer, inj_pos=None, quant_min_max
                 # Register forward hook for output injection
                 handle = module.register_forward_hook(
                     lambda mod, inp, output, name=name, precision=precision, quant_min_max=quant_min_max, inj_type=inj_type, inj_pos=inj_pos: 
-                    output_injection_hook(mod, inp, output, name, precision, quant_min_max, inj_type, inj_pos)
+                    output_injection_hook(mod, inp, output, name, precision, quant_min_max, inj_type, inj_pos, bit_position)
                 )
                 handles.append(handle)
     
     return handles
 
-def input_injection_hook(module, inputs, layer_name, precision, quant_min_max, inj_type, inj_pos):
+def input_injection_hook(module, inputs, layer_name, precision, quant_min_max, inj_type, inj_pos, bit_position):
     """Hook for injecting faults into input tensors"""
     
     # Get the input tensor
@@ -113,7 +114,7 @@ def input_injection_hook(module, inputs, layer_name, precision, quant_min_max, i
             
             # Get bit flip perturbation
             _, perturb = get_bit_flip_perturbation(
-                'default', precision, golden_val, layer_name, 'INPUT', quant_min_max
+                'default', precision, golden_val, layer_name, 'INPUT', quant_min_max, bit_position
             )
             
             # Apply perturbation
@@ -142,7 +143,7 @@ def input_injection_hook(module, inputs, layer_name, precision, quant_min_max, i
         
         return (modified_input,) + inputs[1:] if len(inputs) > 1 else modified_input
 
-def weight_injection_hook(module, inputs, layer_name, precision, quant_min_max, inj_type, inj_pos):
+def weight_injection_hook(module, inputs, layer_name, precision, quant_min_max, inj_type, inj_pos, bit_position):
     """Hook for injecting faults into weight tensors"""
     
     # Store original weights for restoration
@@ -179,7 +180,7 @@ def weight_injection_hook(module, inputs, layer_name, precision, quant_min_max, 
             
             # Get bit flip perturbation
             _, perturb = get_bit_flip_perturbation(
-                'default', precision, golden_val, layer_name, 'WEIGHT', quant_min_max
+                'default', precision, golden_val, layer_name, 'WEIGHT', quant_min_max, bit_position
             )
             
             # Apply perturbation
@@ -191,7 +192,7 @@ def weight_injection_hook(module, inputs, layer_name, precision, quant_min_max, 
         # Apply delta to weights
         module.weight.data = module.original_weight + delta
 
-def output_injection_hook(module, inputs, output, layer_name, precision, quant_min_max, inj_type, inj_pos):
+def output_injection_hook(module, inputs, output, layer_name, precision, quant_min_max, inj_type, inj_pos, bit_position):
     """Hook for injecting faults into output tensors"""
     
     # For RD_BFLIP (random bit flip) or general RD injection
@@ -224,7 +225,7 @@ def output_injection_hook(module, inputs, output, layer_name, precision, quant_m
                 
                 # Get bit flip perturbation
                 _, perturb = get_bit_flip_perturbation(
-                    'default', precision, golden_val, layer_name, 'RD_BFLIP', quant_min_max
+                    'default', precision, golden_val, layer_name, 'RD_BFLIP', quant_min_max, bit_position
                 )
                 
                 # Apply perturbation

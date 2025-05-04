@@ -116,7 +116,8 @@ def run_one_cnn(args):
         'original_prob': original_prob,
         'faulty_pred': faulty_pred,
         'faulty_prob': faulty_prob,
-        'changed': original_pred != faulty_pred
+        'changed': original_pred != faulty_pred,
+        'invalid': original_pred != label
     }
 
 def main():
@@ -141,7 +142,7 @@ def main():
         file_exists = os.path.isfile(args.output_csv)
         with open(args.output_csv, 'a', newline='') as csvfile:
             fieldnames = ['network', 'precision', 'inj_type', 'layer',  
-                         'original_pred', 'original_prob', 'faulty_pred', 'faulty_prob', 'changed']
+                         'original_pred', 'original_prob', 'faulty_pred', 'faulty_prob', 'changed','invalid']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             
             if not file_exists:
@@ -156,7 +157,8 @@ def main():
                 'original_prob': result['original_prob'],
                 'faulty_pred': result['faulty_pred'],
                 'faulty_prob': result['faulty_prob'],
-                'changed': result['changed']
+                'changed': result['changed'],
+                'invalid': result['invalid']
             })
 
 if __name__ == '__main__':
