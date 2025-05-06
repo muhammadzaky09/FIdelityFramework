@@ -247,56 +247,34 @@ def delta_generator(network, precision, inj_type, layer_list, layer_dim, quant_m
 
     return delta_set, inj_pos
 
-# Convert Conv2D operation to a PyTorch function
 def perturb_conv(inp, weight, stride, same_padding, channels_out=None):
-    """Simulate a conv2d operation with PyTorch semantics"""
-    # Convert numpy to PyTorch if necessary
-    if isinstance(inp, np.ndarray):
-        inp = torch.from_numpy(inp).float()
-    if isinstance(weight, np.ndarray):
-        weight = torch.from_numpy(weight).float()
+    # Ensure we're working with PyTorch tensors
+    if not isinstance(inp, torch.Tensor):
+        inp = torch.tensor(inp, dtype=torch.float32)
+    if not isinstance(weight, torch.Tensor):
+        weight = torch.tensor(weight, dtype=torch.float32)
     
     # Handle padding
     padding = 0
     if same_padding:
         # PyTorch uses (height, width) for kernel size 
-        if len(weight.shape) == 4:
-            kernel_h, kernel_w = weight.shape[2], weight.shape[3]
-        else:
-            kernel_h, kernel_w = weight.shape[0], weight.shape[1]
+        kernel_h, kernel_w = weight.shape[2], weight.shape[3]  # OIHW format
         padding_h = kernel_h // 2
         padding_w = kernel_w // 2
         padding = (padding_h, padding_w)
     
-    # Create a conv2d layer and perform the operation
-    # PyTorch Conv2d expects (batch, channels, height, width)
-    if len(inp.shape) == 4:  # Already BCHW format
-        input_tensor = inp
-    else:  # Need to adjust from BHWC to BCHW
-        input_tensor = inp.permute(0, 3, 1, 2)
-    
-    # Handle weight tensor format for PyTorch (out_channels, in_channels, kernel_h, kernel_w)
-    if len(weight.shape) == 4:
-        if weight.shape[3] == 1 and channels_out is not None:
-            # Handle depthwise conv
-            weight_tensor = weight.permute(3, 2, 0, 1).repeat(channels_out, 1, 1, 1)
-        else:
-            # Standard conv
-            weight_tensor = weight.permute(3, 2, 0, 1)
-    else:
-        weight_tensor = weight
-    
-    # Create a functional conv layer
-    import torch.nn.functional as F
+    # Handle stride format
     if isinstance(stride, int):
         stride = (stride, stride)
     
-    # Perform convolution
-    out = F.conv2d(input_tensor, weight_tensor, bias=None, stride=stride, padding=padding)
+    # Special handling for depthwise convolution if needed
+    if channels_out is not None and weight.shape[0] == 1:
+        # For depthwise convolution: repeat the weight for each output channel
+        weight = weight.repeat(channels_out, 1, 1, 1)
     
-    # Convert back to numpy if input was numpy
-    if isinstance(inp, np.ndarray):
-        out = out.numpy()
+    # Perform convolution (inp is already in BCHW, weight is already in OIHW)
+    import torch.nn.functional as F
+    out = F.conv2d(inp, weight, bias=None, stride=stride, padding=padding)
     
     return out
 
