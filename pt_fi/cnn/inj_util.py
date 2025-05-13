@@ -6,7 +6,7 @@ import struct
 import math
 import torch
 import torch.nn as nn
-
+import torch.nn.functional as F
 # Keep these functions unchanged as they're framework-agnostic
 def bin2fp32(bin_str):
     assert len(bin_str) == 32
@@ -247,36 +247,30 @@ def delta_generator(network, precision, inj_type, layer_list, layer_dim, quant_m
 
     return delta_set, inj_pos
 
-def perturb_conv(inp, weight, stride, same_padding, channels_out=None):
-    # Ensure we're working with PyTorch tensors
+def perturb_conv(inp, weight, stride, padding, groups=1):
+    """
+    Propagate a perturbation through convolution.
+    """
+    # Ensure inputs are tensors with proper device
     if not isinstance(inp, torch.Tensor):
         inp = torch.tensor(inp, dtype=torch.float32)
     if not isinstance(weight, torch.Tensor):
         weight = torch.tensor(weight, dtype=torch.float32)
     
-    # Handle padding
-    padding = 0
-    if same_padding:
-        # PyTorch uses (height, width) for kernel size 
-        kernel_h, kernel_w = weight.shape[2], weight.shape[3]  # OIHW format
-        padding_h = kernel_h // 2
-        padding_w = kernel_w // 2
-        padding = (padding_h, padding_w)
+    # Ensure weight and input are on the same device
+    if inp.device != weight.device:
+        weight = weight.to(inp.device)
     
-    # Handle stride format
+    # Handle stride and padding formats
     if isinstance(stride, int):
         stride = (stride, stride)
+    if isinstance(padding, int):
+        padding = (padding, padding)
     
-    # Special handling for depthwise convolution if needed
-    if channels_out is not None and weight.shape[0] == 1:
-        # For depthwise convolution: repeat the weight for each output channel
-        weight = weight.repeat(channels_out, 1, 1, 1)
+    # Perform convolution
+    delta = F.conv2d(inp.double(), weight.double(), bias=None, stride=stride, padding=padding, groups=groups)
     
-    # Perform convolution (inp is already in BCHW, weight is already in OIHW)
-    import torch.nn.functional as F
-    out = F.conv2d(inp, weight, bias=None, stride=stride, padding=padding)
-    
-    return out
+    return delta
 
 # Function to get appropriate injection type string for PyTorch
 def get_network_inj_type(precision, inj_type):
@@ -296,3 +290,25 @@ def get_pytorch_conv_layers(model):
         if isinstance(module, nn.Conv2d):
             layers[name] = module
     return layers
+
+def apply_precision_bounds(tensor, precision, quant_min_max=None):
+    """
+    Apply precision-specific bounds to tensor and handle NaN values.
+    """
+    # Apply bounding based on precision
+    if precision == 'fp32':
+        bounded = torch.clamp(tensor, -3.402823e38, 3.402823e38)
+    elif precision == 'fp16':
+        bounded = torch.clamp(tensor, -65504, 65504)
+    elif 'int' in precision and quant_min_max is not None:
+        q_min, q_max = quant_min_max
+        bounded = torch.clamp(tensor, q_min, q_max)
+    else:
+        bounded = tensor
+    
+    # Replace NaN values with zeros
+    result = torch.where(torch.isnan(bounded), 
+                        torch.zeros_like(bounded), 
+                        bounded)
+    
+    return result

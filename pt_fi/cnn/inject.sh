@@ -1,0 +1,1 @@
+python parallel_inject.py --model resnet18 --precision fp32 --ckpt_path ../../../models/weights/ResNet18/resnet18.pth --experiments_per_config 1 --output_dir ./results/ResNet18/fp32

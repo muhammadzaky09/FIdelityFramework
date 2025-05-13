@@ -99,7 +99,7 @@ def get_random_tensor_position(tensor_shape):
     return tuple(position)
 
 def run_fault_injection_campaign(args):
-    device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
+    device = torch.device( "cpu")
     print(f"Using device: {device}")
     
     model, dataset, num_classes = load_model_and_dataset(args.model, args.ckpt_path, device)
@@ -113,21 +113,23 @@ def run_fault_injection_campaign(args):
     layer_info = discover_layers(model, input_shape, target_layer_types=(nn.Conv2d,))
     print(f"Found {len(layer_info)} target layers")
     print("Layer names:", list(layer_info.keys()))
+    print(layer_info)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     result_dir = args.output_dir if args.output_dir else f"fi_results_{args.model}_{timestamp}"
     os.makedirs(result_dir, exist_ok=True)
     
     csv_path = os.path.join(result_dir, f"{args.model}_{args.precision}_fault_injection_results.csv")
-    with open(csv_path, 'w', newline='') as csvfile:
-        fieldnames = [
-            'model', 'precision', 'layer_name', 'layer_type', 'fault_model', 
-            'bit_position', 'experiment_id', 'image_label', 'original_class', 
-            'original_confidence', 'faulty_class', 'faulty_confidence', 
-            'classification_changed', 'injection_position'
-        ]
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
+    fieldnames = [
+                'model', 'precision', 'layer_name', 'layer_type', 'fault_model', 
+                'bit_position', 'experiment_id', 'image_label', 'original_class', 
+                'original_confidence', 'faulty_class', 'faulty_confidence', 
+                'classification_changed', 'injection_position'
+            ]
+    if not os.path.exists(csv_path):
+        with open(csv_path, 'w', newline='') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
     
     if args.precision == 'fp32':
         bit_positions = range(32)
@@ -138,7 +140,7 @@ def run_fault_injection_campaign(args):
     else:  # int16
         bit_positions = range(16)
     
-    fault_models = ['INPUT', 'WEIGHT', 'INPUT16', 'WEIGHT16', 'RD', 'RD_BFLIP']
+    fault_models = ['INPUT','WEIGHT','INPUT16','WEIGHT16']
     
     total_experiments = len(layer_info) * len(bit_positions) * len(fault_models) * args.experiments_per_config
     print(f"Starting fault injection campaign with {total_experiments} total experiments")
@@ -146,9 +148,11 @@ def run_fault_injection_campaign(args):
     progress_bar = tqdm(total=total_experiments, desc="Progress")
     
     for layer_name, layer_data in layer_info.items():
-        for bit_position in bit_positions:
-            for fault_model in fault_models:
+        for fault_model in fault_models:
+            for bit_position in bit_positions:
                 for exp_id in range(args.experiments_per_config):
+                    print("--------------------------------")
+                    print("layer_name: ",layer_name,"bit_position: ",bit_position,"fault_model: ",fault_model,"exp_id: ",exp_id)
                     # Get random image from dataset
                     image_idx = random.randint(0, len(dataset)-1)
                     image, label = dataset[image_idx]
@@ -161,21 +165,14 @@ def run_fault_injection_campaign(args):
                         original_class = torch.argmax(original_probs, dim=1).item()
                         original_confidence = original_probs[0, original_class].item()
                     
-                    if fault_model == 'INPUT':
+                    if 'INPUT' in fault_model:
                         tensor_shape = layer_data['input_shape']
                         inj_position = (0,) + get_random_tensor_position(tensor_shape[1:])
-                    elif fault_model == 'WEIGHT':
-                        if 'weight_shape' in layer_data:
-                            tensor_shape = layer_data['weight_shape']
-                            inj_position = get_random_tensor_position(tensor_shape)
-                        else:
-                            # Skip if no weights (e.g., for pooling layers)
-                            progress_bar.update(1)
-                            continue
+                    elif 'WEIGHT' in fault_model:
+                        tensor_shape = layer_data['weight_shape']
+                        inj_position = get_random_tensor_position(tensor_shape)
                     else:  # RD_BFLIP
-                        # For output injection, use output tensor shape
                         tensor_shape = layer_data['output_shape']
-                        # First dim is batch size, so we fix it to 0
                         inj_position = (0,) + get_random_tensor_position(tensor_shape[1:])
                     
                     # Set up fault injection

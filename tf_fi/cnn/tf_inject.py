@@ -8,7 +8,7 @@ import re
 from slim.preprocessing.preprocessing_factory import get_preprocessing
 from tensorflow.keras.datasets import cifar10
 
-from inj_util import * 
+from tf_inj_util import * 
 
 def str2list(inp, do_float=False):
     str_list = inp.strip("][").split(',')
