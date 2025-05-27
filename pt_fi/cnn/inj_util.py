@@ -147,13 +147,27 @@ def get_bit_flip_perturbation(network, precision, golden_d, layer, typ=None, qua
     if 'fp32' in precision:
         golden_b = fp322bin(golden_d)
         assert len(golden_b) == 32
-        flip_bit = bit_position
-        if golden_b[31-flip_bit] == '1':
-            inj_b = golden_b[:31-flip_bit] + '0' + golden_b[31-flip_bit+1:]
+        
+
+        # Use the bit_position passed from the experiment loop
+        flip_bit = bit_position # This was the original variable name used for indexing
+        
+        # Actual index in the binary string (MSB is golden_b[0], LSB is golden_b[31])
+        # string_idx_to_flip refers to the index in golden_b if bit_position means (0=LSB, 31=MSB)
+        # The original code used `31-flip_bit` implying flip_bit was 0 for LSB, 31 for MSB.
+        # If bit_position is 0 for LSB, 31 for MSB as per your loop.
+        string_idx_to_flip = 31 - flip_bit
+
+        original_char_at_flip_idx = golden_b[string_idx_to_flip]
+
+        if original_char_at_flip_idx == '1':
+            inj_b = golden_b[:string_idx_to_flip] + '0' + golden_b[string_idx_to_flip+1:]
         else:
-            inj_b = golden_b[:31-flip_bit] + '1' + golden_b[31-flip_bit+1:]
-        inj_d = bin2fp32(inj_b)
+            inj_b = golden_b[:string_idx_to_flip] + '1' + golden_b[string_idx_to_flip+1:]
+        
+        inj_d = bin2fp32(inj_b) # This will convert NaN to 0
         perturb = inj_d - golden_d
+
     elif 'fp16' in precision:
         golden_b = fp162bin(golden_d)
         assert len(golden_b) == 16
@@ -294,21 +308,43 @@ def get_pytorch_conv_layers(model):
 def apply_precision_bounds(tensor, precision, quant_min_max=None):
     """
     Apply precision-specific bounds to tensor and handle NaN values.
+    Modified for FP32 to allow NaN/Inf propagation like TensorFlow default behavior.
     """
-    # Apply bounding based on precision
     if precision == 'fp32':
-        bounded = torch.clamp(tensor, -3.402823e38, 3.402823e38)
+        # For FP32, allow NaN and Inf to propagate to better match TensorFlow's default op behavior.
+        # PyTorch operations will handle these values according to IEEE 754 standards.
+        return tensor 
     elif precision == 'fp16':
-        bounded = torch.clamp(tensor, -65504, 65504)
+        # Original FP16 handling: clamp Inf to max/min_fp16, then NaN to 0.
+        # To be more TF-like for FP16 (propagate NaN/Inf):
+        # return tensor # Option 1: Fully TF-like, let NaN/Inf propagate
+        # Option 2: Keep original clamping for FP16 for now, as it's a smaller range.
+        bounded = torch.clamp(tensor, min=torch.finfo(torch.float16).min, max=torch.finfo(torch.float16).max)
+        result = torch.where(torch.isnan(bounded), torch.zeros_like(bounded), bounded)
+        return result
     elif 'int' in precision and quant_min_max is not None:
         q_min, q_max = quant_min_max
-        bounded = torch.clamp(tensor, q_min, q_max)
+        # For integer types, inputs ideally should not be NaN/Inf.
+        # If they are, casting to int is problematic. Defaulting NaN to 0 and clamping Inf.
+        # This is a reasonable approach for int conversion.
+        temp_tensor = tensor
+        if torch.is_floating_point(tensor):
+            # Ensure finite values before int clamping/casting if coming from float
+            # Replace NaN with 0, Inf with int range bounds (q_max, q_min)
+            # This attempts to make problematic floats convertible to int
+            is_nan = torch.isnan(tensor)
+            is_posinf = torch.isposinf(tensor)
+            is_neginf = torch.isneginf(tensor)
+
+            temp_tensor = torch.where(is_nan, torch.tensor(0.0, dtype=tensor.dtype, device=tensor.device), tensor)
+            temp_tensor = torch.where(is_posinf, torch.tensor(q_max, dtype=tensor.dtype, device=tensor.device), temp_tensor)
+            temp_tensor = torch.where(is_neginf, torch.tensor(q_min, dtype=tensor.dtype, device=tensor.device), temp_tensor)
+        
+        # Clamp and cast to the original integer tensor's dtype if it was int, or a default int otherwise
+        # If original tensor was float, this will cast to a default int type (e.g. torch.int64 for .int())
+        # To preserve specific int type if tensor was already int but somehow went through float path:
+        target_dtype = tensor.dtype if not torch.is_floating_point(tensor) else torch.int32 # Default target int if input was float
+        return torch.clamp(temp_tensor, q_min, q_max).to(target_dtype)
     else:
-        bounded = tensor
-    
-    # Replace NaN values with zeros
-    result = torch.where(torch.isnan(bounded), 
-                        torch.zeros_like(bounded), 
-                        bounded)
-    
-    return result
+        # If no specific precision rule (e.g. already int and no quant_min_max)
+        return tensor

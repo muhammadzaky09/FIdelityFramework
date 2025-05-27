@@ -11,15 +11,18 @@ from datetime import datetime
 import torchvision.transforms as transforms
 from torchvision.datasets import MNIST, CIFAR10
 import torch.nn as nn
+import gc
 
 from models.resnet import ResNet18, ResNet50
+from models.LeNet5 import LeNet5
 # Import the PyTorch-adapted injection functions
 from inj_layers import register_fault_hooks, remove_fault_hooks
 from inj_util import get_bit_flip_perturbation
 
 def load_model_and_dataset(model_name, ckpt_path=None, device='cuda'):
     if model_name == 'lenet5':
-        model = LeNet5()
+        #model = LeNet5()
+        model = torch.load('../../../results/lenet5-magnitude/pruned_model_step_10.pth')
         transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize((0.1307,), (0.3081,)),
@@ -27,6 +30,7 @@ def load_model_and_dataset(model_name, ckpt_path=None, device='cuda'):
         dataset = MNIST(root='./data', train=False, download=True, transform=transform)
         num_classes = 10
     elif model_name == 'resnet18':
+        #model = torch.load('../../../results/resnet18-act/pruned_model_step_10.pth')
         model = ResNet18()
         transform = transforms.Compose([
             transforms.ToTensor(),
@@ -36,6 +40,7 @@ def load_model_and_dataset(model_name, ckpt_path=None, device='cuda'):
         num_classes = 10
     elif model_name == 'resnet50':
         model = ResNet50()
+        #model = torch.load('../../../results/resnet50-act/pruned_model_step_10.pth')
         transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
@@ -44,13 +49,13 @@ def load_model_and_dataset(model_name, ckpt_path=None, device='cuda'):
         num_classes = 10
     else:
         raise ValueError(f"Unsupported model: {model_name}")
-    checkpoint= torch.load(ckpt_path, map_location=device)
-    model.load_state_dict(checkpoint)
+    #checkpoint= torch.load(ckpt_path, map_location=device)
+    #model.load_state_dict(checkpoint)
     model = model.to(device)
     model.eval()
     return model, dataset, num_classes
 
-def discover_layers(model, input_shape, target_layer_types=(nn.Conv2d)):
+def discover_layers(model, input_shape, target_layer_types=(nn.Linear, nn.Conv2d)):
     layer_info = {}
     model.eval()
     outputs = {}
@@ -110,7 +115,7 @@ def run_fault_injection_campaign(args):
         input_shape = (1, 3, 32, 32)  
     
     print("Discovering layers...")
-    layer_info = discover_layers(model, input_shape, target_layer_types=(nn.Conv2d,))
+    layer_info = discover_layers(model, input_shape, target_layer_types=(nn.Linear,nn.Conv2d,))
     print(f"Found {len(layer_info)} target layers")
     print("Layer names:", list(layer_info.keys()))
     print(layer_info)
@@ -140,19 +145,46 @@ def run_fault_injection_campaign(args):
     else:  # int16
         bit_positions = range(16)
     
-    fault_models = ['INPUT','WEIGHT','INPUT16','WEIGHT16']
+    fault_models = ['INPUT','WEIGHT','INPUT16','WEIGHT16','RD','RD_BFLIP']
     
-    total_experiments = len(layer_info) * len(bit_positions) * len(fault_models) * args.experiments_per_config
+    # Calculate total experiments considering different loop structures for different fault models
+    total_experiments = 0
+    for fault_model in fault_models:
+        if fault_model == 'RD':
+            experiments_per_layer = 2 * args.experiments_per_config  # range(2) * experiments_per_config
+        elif fault_model == 'RD_BFLIP':
+            experiments_per_layer = 1 * args.experiments_per_config  # range(1) * experiments_per_config
+        else:  # For future INPUT, WEIGHT, etc.
+            experiments_per_layer = len(bit_positions) * args.experiments_per_config
+        total_experiments += len(layer_info) * experiments_per_layer
+    
     print(f"Starting fault injection campaign with {total_experiments} total experiments")
     
     progress_bar = tqdm(total=total_experiments, desc="Progress")
     
     for layer_name, layer_data in layer_info.items():
         for fault_model in fault_models:
-            for bit_position in bit_positions:
+            current_bit_positions = bit_positions  # Use a different variable name
+            if 'RD' in fault_model:  # Only apply range(2) for pure RD, not RD_BFLIP
+                current_bit_positions = range(2)  # Don't overwrite the original bit_positions
+            for bit_position in current_bit_positions:
                 for exp_id in range(args.experiments_per_config):
                     print("--------------------------------")
-                    print("layer_name: ",layer_name,"bit_position: ",bit_position,"fault_model: ",fault_model,"exp_id: ",exp_id)
+                    
+                    # Generate random bit position for RD_BFLIP
+                    if fault_model == 'RD_BFLIP':
+                        if args.precision == 'fp32':
+                            actual_bit_position = random.randint(0, 31)
+                        elif args.precision == 'fp16':
+                            actual_bit_position = random.randint(0, 15)
+                        elif args.precision == 'int8':
+                            actual_bit_position = random.randint(0, 7)
+                        else:  # int16
+                            actual_bit_position = random.randint(0, 15)
+                    else:
+                        actual_bit_position = bit_position
+                    
+                    print("layer_name: ",layer_name,"bit_position: ",actual_bit_position,"fault_model: ",fault_model,"exp_id: ",exp_id)
                     # Get random image from dataset
                     image_idx = random.randint(0, len(dataset)-1)
                     image, label = dataset[image_idx]
@@ -187,11 +219,11 @@ def run_fault_injection_campaign(args):
                     hooks = register_fault_hooks(
                         model,
                         inj_type=fault_model,
-                        inj_layer=[layer_name],
+                        inj_layer=layer_name,
                         inj_pos=inj_pos,
                         quant_min_max=quant_min_max,
                         precision=args.precision,
-                        bit_position=bit_position  # Pass specific bit position
+                        bit_position=actual_bit_position  # Pass the actual bit position (random for RD_BFLIP)
                     )
                     
                     model.eval()
@@ -205,6 +237,9 @@ def run_fault_injection_campaign(args):
                         # Remove hooks to restore model
                         remove_fault_hooks(model, hooks)
                         
+                        # Store the bit position for recording
+                        recorded_bit_position = actual_bit_position 
+                        
                         # Record results
                         result = {
                             'model': args.model,
@@ -212,7 +247,7 @@ def run_fault_injection_campaign(args):
                             'layer_name': layer_name,
                             'layer_type': layer_data['type'],
                             'fault_model': fault_model,
-                            'bit_position': bit_position,
+                            'bit_position': recorded_bit_position,
                             'experiment_id': exp_id,
                             'image_label': label,
                             'original_class': original_class,
@@ -227,9 +262,10 @@ def run_fault_injection_campaign(args):
                         with open(csv_path, 'a', newline='') as csvfile:
                             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                             writer.writerow(result)
+                        gc.collect()
                         
                     except Exception as e:
-                        print(f"\nError in experiment: layer={layer_name}, bit={bit_position}, fault={fault_model}, exp={exp_id}")
+                        print(f"\nError in experiment: layer={layer_name}, bit={actual_bit_position}, fault={fault_model}, exp={exp_id}")
                         print(f"Exception: {str(e)}")
                         # Ensure hooks are removed even if there's an error
                         try:
@@ -249,7 +285,7 @@ if __name__ == "__main__":
                         help='Model architecture to test')
     parser.add_argument('--precision', type=str, default='fp32', choices=['fp32', 'fp16', 'int16', 'int8'],
                         help='Numerical precision for fault injection')
-    parser.add_argument('--ckpt_path', type=str, default=None, required=True,
+    parser.add_argument('--ckpt_path', type=str, default=None,
                         help='Path to model checkpoint')
     parser.add_argument('--output_dir', type=str, default=None,
                         help='Directory to save results (default: auto-generated)')
