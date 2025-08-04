@@ -17,9 +17,9 @@ from models.resnet import ResNet18, ResNet50
 from models.LeNet5 import LeNet5
 # Import the PyTorch-adapted injection functions
 from inj_layers import register_fault_hooks, remove_fault_hooks
-from inj_util import get_bit_flip_perturbation
 
-def load_model_and_dataset(model_name, ckpt_path=None, device='cuda'):
+
+def load_model_and_dataset(model_name, ckpt_path=None, device='cuda', precision='fp32'):
     if model_name == 'lenet5':
         #model = LeNet5()
         model = torch.load('../../../results/lenet5-magnitude/pruned_model_step_10.pth')
@@ -52,10 +52,11 @@ def load_model_and_dataset(model_name, ckpt_path=None, device='cuda'):
     #checkpoint= torch.load(ckpt_path, map_location=device)
     #model.load_state_dict(checkpoint)
     model = model.to(device)
+    
     model.eval()
     return model, dataset, num_classes
 
-def discover_layers(model, input_shape, target_layer_types=(nn.Linear, nn.Conv2d)):
+def discover_layers(model, input_shape, target_layer_types=(nn.Linear, nn.Conv2d), precision='fp32'):
     layer_info = {}
     model.eval()
     outputs = {}
@@ -75,6 +76,11 @@ def discover_layers(model, input_shape, target_layer_types=(nn.Linear, nn.Conv2d
         if isinstance(module, target_layer_types):
             hooks.append(module.register_forward_hook(hook_fn(name)))
     dummy_input = torch.randn(*input_shape).to(next(model.parameters()).device)
+    
+    # Convert dummy input to FP16 if needed
+    if precision == 'fp16':
+        dummy_input = dummy_input.half()
+    
     with torch.no_grad():
         model(dummy_input)
     
@@ -107,7 +113,7 @@ def run_fault_injection_campaign(args):
     device = torch.device( "cpu")
     print(f"Using device: {device}")
     
-    model, dataset, num_classes = load_model_and_dataset(args.model, args.ckpt_path, device)
+    model, dataset, num_classes = load_model_and_dataset(args.model, args.ckpt_path, device, args.precision)
     
     if args.model == 'lenet5':
         input_shape = (1, 1, 28, 28)  
@@ -115,7 +121,7 @@ def run_fault_injection_campaign(args):
         input_shape = (1, 3, 32, 32)  
     
     print("Discovering layers...")
-    layer_info = discover_layers(model, input_shape, target_layer_types=(nn.Linear,nn.Conv2d,))
+    layer_info = discover_layers(model, input_shape, target_layer_types=(nn.Linear,nn.Conv2d,), precision=args.precision)
     print(f"Found {len(layer_info)} target layers")
     print("Layer names:", list(layer_info.keys()))
     print(layer_info)
@@ -171,6 +177,16 @@ def run_fault_injection_campaign(args):
                 for exp_id in range(args.experiments_per_config):
                     print("--------------------------------")
                     
+                    # Set proper bounds for each precision type
+                    if args.precision == 'fp16':
+                        quant_min_max = [torch.finfo(torch.float16).min, torch.finfo(torch.float16).max]
+                    elif args.precision == 'int8':
+                        quant_min_max = [-128, 127]
+                    elif args.precision == 'int16':
+                        quant_min_max = [-32768, 32767]
+                    else:  # fp32
+                        quant_min_max = None
+                    
                     # Generate random bit position for RD_BFLIP
                     if fault_model == 'RD_BFLIP':
                         if args.precision == 'fp32':
@@ -185,10 +201,12 @@ def run_fault_injection_campaign(args):
                         actual_bit_position = bit_position
                     
                     print("layer_name: ",layer_name,"bit_position: ",actual_bit_position,"fault_model: ",fault_model,"exp_id: ",exp_id)
-                    # Get random image from dataset
                     image_idx = random.randint(0, len(dataset)-1)
                     image, label = dataset[image_idx]
                     image = image.unsqueeze(0).to(device)  
+                    
+                    if args.precision == 'fp16':
+                        image = image.half()
                     
                     model.eval()
                     with torch.no_grad():
@@ -206,11 +224,6 @@ def run_fault_injection_campaign(args):
                     else:  # RD_BFLIP
                         tensor_shape = layer_data['output_shape']
                         inj_position = (0,) + get_random_tensor_position(tensor_shape[1:])
-                    
-                    # Set up fault injection
-                    quant_min_max = [-3.402823e38, 3.402823e38] if args.precision == 'fp32' else [-65504, 65504]
-                    if args.precision in ['int8', 'int16']:
-                        quant_min_max = [-128, 127] if args.precision == 'int8' else [-32768, 32767]
                     
                     # Configure hooks for targeted injection
                     inj_pos = {layer_name: [inj_position]}
@@ -232,7 +245,7 @@ def run_fault_injection_campaign(args):
                             faulty_output = model(image)
                             faulty_probs = torch.nn.functional.softmax(faulty_output, dim=1)
                             faulty_class = torch.argmax(faulty_probs, dim=1).item()
-                            faulty_confidence = faulty_probs[0, faulty_class].item()
+                            faulty_confidence = faulty_probs[0, original_class].item()
                         
                         # Remove hooks to restore model
                         remove_fault_hooks(model, hooks)
